@@ -1,0 +1,14 @@
+[
+  {
+    "listing": "/index.html",
+    "items": [
+      "/analyses/00-first_pass_analysis.html"
+    ]
+  },
+  {
+    "listing": "/00-notes_browsing.html",
+    "items": [
+      "/notes/example_notes.html"
+    ]
+  }
+]

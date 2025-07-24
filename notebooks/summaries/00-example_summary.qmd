@@ -1,0 +1,26 @@
+---
+title: "Example Summary"
+date: last-modified
+categories: [summary]
+format: html
+css: summaries.css
+---
+
+<br>
+<br>
+
+# Example Summary of Data:
+
+
+These documents are formatted more as html documents, embedding images from the various analysis notebooks. Where possible I liked to reference the dated versions of figures so that they don't accidentally get overwritten in the future. 
+
+<details>
+<summary> Look here - an example image embedded in a dropdown! :)  </summary>
+<br>
+<br>
+<img src="../analyses/figures/png/dated_versions/2025-02-05_example_figure.png" width="60%" style="margin-left:15%"/>
+<br>
+
+Then add text to explain the figures etc. 
+
+</details>

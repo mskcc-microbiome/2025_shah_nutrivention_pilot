@@ -1,0 +1,78 @@
+[
+  {
+    "objectID": "summaries/00-example_summary.html",
+    "href": "summaries/00-example_summary.html",
+    "title": "Example Summary",
+    "section": "",
+    "text": "Example Summary of Data:\nThese documents are formatted more as html documents, embedding images from the various analysis notebooks. Where possible I liked to reference the dated versions of figures so that they don’t accidentally get overwritten in the future.\n\n\nLook here - an example image embedded in a dropdown! :)\n\n   \nThen add text to explain the figures etc.",
+    "crumbs": [
+      "Analyses",
+      "Example Summary"
+    ]
+  },
+  {
+    "objectID": "index.html",
+    "href": "index.html",
+    "title": "All Analyses",
+    "section": "",
+    "text": "First Pass Analysis\n\n\n\n\n\n\nanalysis\n\n\n\n\n\n\n\n\n\nFeb 5, 2025\n\n\n\n\n\n\nNo matching items",
+    "crumbs": [
+      "Analyses",
+      "Overview of all Analyses"
+    ]
+  },
+  {
+    "objectID": "01-project_notes_and_intro.html",
+    "href": "01-project_notes_and_intro.html",
+    "title": "Project Overview/Introduction",
+    "section": "",
+    "text": "- Goal 1!\n- and... goal 2",
+    "crumbs": [
+      "Project Information",
+      "Introduction"
+    ]
+  },
+  {
+    "objectID": "01-project_notes_and_intro.html#goals",
+    "href": "01-project_notes_and_intro.html#goals",
+    "title": "Project Overview/Introduction",
+    "section": "",
+    "text": "- Goal 1!\n- and... goal 2",
+    "crumbs": [
+      "Project Information",
+      "Introduction"
+    ]
+  },
+  {
+    "objectID": "00-notes_browsing.html",
+    "href": "00-notes_browsing.html",
+    "title": "Notes",
+    "section": "",
+    "text": "Collection of notes/updates/what I have tried. Organized so most recent stuff is at the top.\n\n\n\n\n\n\n\n\n\n\n\n\n\n\nExample Meeting Note\n\n\n\n\n\n\n\n\n\n\n\nFeb 4, 2025\n\n\n\n\n\n\nNo matching items",
+    "crumbs": [
+      "Project Information",
+      "View Notes"
+    ]
+  },
+  {
+    "objectID": "analyses/00-first_pass_analysis.html",
+    "href": "analyses/00-first_pass_analysis.html",
+    "title": "First Pass Analysis",
+    "section": "",
+    "text": "[1] \"figures/png/example_figure.png\""
+  },
+  {
+    "objectID": "notes/example_notes.html",
+    "href": "notes/example_notes.html",
+    "title": "Example Meeting Note",
+    "section": "",
+    "text": "Examples of a note page for a meeting:"
+  },
+  {
+    "objectID": "notes/example_notes.html#summary",
+    "href": "notes/example_notes.html#summary",
+    "title": "Example Meeting Note",
+    "section": "Summary:",
+    "text": "Summary:\nOne to two sentence summary.\n\nAttendees:\n\nPerson 1\nPerson 2 ….\n\n\n\nAction Items:\n\nImportant thing to do 1\nImportant thing to do 2….."
+  }
+]

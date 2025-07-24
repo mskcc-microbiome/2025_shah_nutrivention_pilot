@@ -1,0 +1,36 @@
+project:
+  type: website
+  output-dir: ../docs
+
+website:
+  title: "My Project Title (replace me in _quarto.yml)" #UPDATE ME
+  navbar:
+    left:
+      - icon: github
+        href: "https://github.mskcc.org" # UPDATE ME
+  sidebar:
+    style: "floating"
+    search: true
+    collapse-level: 3
+    contents: 
+      - section: "Project Information"
+        contents: 
+          - text: "View Notes"
+            href: 00-notes_browsing.qmd
+          - text: "Introduction"
+            href: 01-project_notes_and_intro.qmd
+      - section: "Analyses"
+        contents: 
+          - text: "Overview of all Analyses"
+            href: index.qmd
+          - text: "Example Summary"
+            href: summaries/00-example_summary.qmd
+
+format:
+  html:
+    theme: 
+      - minty  #OPTIONALLY UPDATE ME, OR GO WITH MY TASTE :) 
+      - custom.scss # Feel free to drop if wanted.  Just some additional fiddling on my part. :) 
+
+
+

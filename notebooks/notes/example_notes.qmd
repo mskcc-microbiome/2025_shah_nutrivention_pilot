@@ -1,0 +1,20 @@
+---
+title: "Example Meeting Note"
+author: {{< var main_author >}}
+date: last-modified
+categories: [meeting_notes]
+---
+
+Examples of a note page for a meeting: 
+
+## Summary:
+
+One to two sentence summary. 
+
+### Attendees:
+- Person 1
+- Person 2 ....
+
+### Action Items:
+- Important thing to do 1 
+- Important thing to do 2.....

@@ -1,0 +1,32 @@
+---
+title: "First Pass Analysis"
+date: last-modified
+categories: [analysis]
+---
+
+```{r}
+#| echo: false
+#| warning: false
+#| include: false
+#| label: library_imports
+
+library(tidyverse)
+library(ggplot2)
+source("../utility_scripts/plotting_help.R")
+```
+
+```{r}
+#| echo: false
+#| include: true
+#| label: example_figure_saving
+
+fake_db <- data.frame(colA = c(1,3,5,2,8,10,6), colB = c(2.2, 4.6, 12, 4.2, 14, 21, 10))
+
+ggplot(fake_db, aes(x = colA, y = colB)) +
+  geom_point(size = 3, color = "steelblue") +
+  theme_classic()
+
+#Note I set save_date = T when I am playing around with the data so I have snapshots of figures as I work on them over time.  Once an analysis has matured I typically try to turn this off. 
+save_figures("example_figure", save_date =T)
+
+```
