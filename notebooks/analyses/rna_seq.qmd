@@ -1,0 +1,719 @@
+---
+title: "RNA Seq Analysis"
+date: last-modified
+categories: [analysis]
+---
+
+In this document you can find the assorted scripts for performing the single cell RNA-seq analysis for this manuscript. The author of this code is 
+
+```{r}
+#| echo: false
+#| warning: false
+#| include: false
+#| eval: false
+#| label: library_imports
+
+library(AnnotationHub)
+library(circlize) #
+library(ComplexHeatmap) #
+library(dplyr)
+library(future); plan("multicore"); options(future.globals.maxSize = 50000 * 1024^2) #t.ly/x_6-
+library(ggh4x)
+library(ggplot2)
+library(ggpubr)
+library(ggside)
+library(pals)
+library(patchwork)
+library(reshape2)
+library(rstatix)
+library(Seurat)
+library(SeuratObject)
+library(Signac)
+
+source("../utility_scripts/plotting_help.R")
+```
+
+```{r}
+#| echo: true
+#| eval: false
+#| include: true
+#| label: environment_variables
+
+poporder <- c("preB", "proB", "B naive", "B memory", "Plasma", 
+              "BaMoP", "HSCs", "MEP", "GMP", 
+              "CD14 monos", "CD16 monos", "MDSC", "MAIT",
+              "CD4 Naive", "CD4 CM", "CD4 EM", "CD4 Th1", "CD4 Th17", "CD4 Tregs", 
+              "CD8 naive", "CD8 CM", "CD8 cytotox", "CD8 exhausted",
+              "gdT cells", "Stromal",
+              "NKs CD56 dim", "NKs CD56 bright", "ILC", 
+              "pDC", "cDC2")
+
+popcolor <- setNames(nm = poporder,
+                     object = c("#793742", stepped()[1:4], #B
+                                stepped()[5:8], #prog
+                                stepped()[9:11], alphabet(2), #monos
+                                "#1F5863", stepped()[13:16], #cd4 #"#053841", 
+                                stepped()[17:20], #cd8
+                                stepped()[22], alphabet()[1], #others
+                                stepped3()[6:7], alphabet()[8], #nk
+                                stepped2()[17:18])) #DC
+
+no_mypops <- c("MAIT", "gdT cells", "ILC", "BaMoP", "Stromal", "CD4 Tregs", "CD8 CM")
+mypops <- c("GMP", "CD14 monos", "CD16 monos", "MDSC", "CD8 cytotox", "CD8 exhausted", "NKs CD56 dim", "NKs CD56 bright")
+
+datapath <- "data location of GEX and ATAC info"
+
+# gene annotation for ATAC data
+ensdbs <- query(AnnotationHub(), c("EnsDb.Hsapiens"))
+ensdb_id <- ensdbs$ah_id[grep(paste0(" 98 EnsDb"), ensdbs$title)]
+ensdb <- ensdbs[[ensdb_id]]
+
+seqlevelsStyle(ensdb) <- "UCSC"
+annotations <- GetGRangesFromEnsDb(ensdb = ensdb)
+genome(annotations) <- "GRCh37"
+```
+
+```{r}
+#| echo: true
+#| eval: false
+#| include: true
+#| label: load_files
+
+(myfiles <- list.files(datapath, pattern = "multiome$"))
+aux_seurat <- lapply(1:length(myfiles), function(x){
+	print(samplename <- myfiles[x])
+
+	aux <- suppressMessages(Read10X(paste0(datapath, samplename, "/CellRangerArc_results/filtered_feature_bc_matrix")))
+	aux_hto <- Read10X(paste0(datapath, samplename, "_HTO/Hashtag_results/readCountMatrix"), gene.column = 1) #https://github.com/satijalab/seurat/issues/4046#issue-803280332
+	colnames(aux_hto) <- paste0(colnames(aux_hto), "-1") #cell bc don't include "-1"
+	
+	## intersection between HTO and GEX
+	isec <- intersect(colnames(aux$`Gene Expression`), colnames(aux_hto))
+
+	aux2 <- CreateSeuratObject(counts = Matrix::Matrix(aux$`Gene Expression`[,isec], sparse = T),
+							   min.cells = 0, project = samplename)
+	aux2[["ATAC"]] <- CreateChromatinAssay(counts = Matrix::Matrix(aux$Peaks[,isec], sparse = T),
+		fragments = paste0(datapath, samplename, "/CellRangerArc_results/atac_fragments.tsv.gz"), 
+		genome = "GRCh37", annotation = annotations, sep = c(":", "-"), verbose = F)
+	aux2[["HTO"]] <- CreateAssayObject(counts = aux_hto[,isec]+1) #sum 1 to avoid dropout errors when demux (https://github.com/satijalab/seurat/issues/5640#issuecomment-1051221101)
+  	
+  ## normalization
+	aux2 <- NormalizeData(aux2, verbose = F)
+	aux2 <- FindVariableFeatures(aux2, verbose = F)
+	aux2 <- ScaleData(aux2, features = VariableFeatures(aux2), verbose = F)
+
+	aux2 <- NormalizeData(aux2, assay = "HTO", normalization.method = "CLR", margin = 2, verbose = F)
+
+	## add QC info
+	aux2 <- PercentageFeatureSet(aux2, pattern = "^MT-", col.name = "percent.mt", assay = "RNA")
+	aux2 <- NucleosomeSignal(aux2, assay = "ATAC", verbose = F)
+	aux2 <- TSSEnrichment(aux2, assay = "ATAC", verbose = F)
+
+  	aux2 <- RenameCells(aux2, add.cell.id = x) #make cells patient-specific
+	return(aux2)
+}); names(aux_seurat) <- myfiles
+
+### filtering ####
+aux <- lapply(aux_seurat, function(x){
+	return(x@meta.data[,c("orig.ident", "nFeature_RNA", "percent.mt", "nFeature_ATAC", "TSS.enrichment", "nucleosome_signal")])
+}) %>% do.call(rbind, .) %>% melt(id.vars = "orig.ident")
+
+aux_seurat_f <- lapply(aux_seurat, function(x){
+	aux <- subset(x, subset = nFeature_RNA > 500 & nFeature_RNA < 5000 &
+							  percent.mt < 25 &
+		    				  nFeature_ATAC > 500 & nFeature_ATAC < 20000 &
+		    				  TSS.enrichment > 1 &
+		    				  nucleosome_signal < 2)
+	return(aux)
+})
+aux_seurat_f <- lapply(aux_seurat_f, function(x) {x$samplename <- x$orig.ident; return(x)})
+
+```
+
+```{r}
+#| echo: true
+#| eval: false
+#| include: true
+#| label: demux_and_process_cells
+
+
+
+### sample demultiplexing ####
+# HTODemux (Seurat's)
+aux_seurat_f <- lapply(aux_seurat_f, function(x){
+	return(HTODemux(x, assay = "HTO", verbose = F))
+}); names(aux_seurat_f) <- myfiles
+
+aux <- lapply(aux_seurat_f, function(x){
+	return(x@meta.data[,c("orig.ident", "HTO_maxID", "HTO_secondID", "HTO_classification", "hash.ID")])
+}) %>% do.call(rbind, .)
+
+#| scDemultiplex (HTO)
+library(scDemultiplex); library(zoo)
+
+aux_seurat_f <- lapply(1:length(aux_seurat_f), function(x){
+  print(names(aux_seurat)[x])
+
+  obj <- aux_seurat_f[[x]]
+  DefaultAssay(object = obj) <- "HTO"
+
+  tagnames <- rownames(obj[["HTO"]])
+
+  obj <- ScaleData(obj, features = tagnames, verbose = F)
+  obj <- RunPCA(obj, features = tagnames, verbose = F, approx = F)
+  obj <- RunUMAP(obj, features = tagnames, slot = "scale.data", verbose = F)
+
+  obj <- demulti_cutoff(obj, mc.cores = 15)
+  return(obj)
+}); names(aux_seurat_f) <- myfiles
+
+aux <- lapply(aux_seurat_f, function(x){
+	return(x@meta.data[,c("orig.ident", "scDemultiplex_cutoff", "scDemultiplex_cutoff.global")])
+}) %>% do.call(rbind, .)
+
+
+#| scds (GEX)
+library(scds)
+
+aux <- lapply(1:length(aux_seurat_f), function(x){
+  print(names(aux_seurat)[x])
+
+  sce <- as.SingleCellExperiment(CreateSeuratObject(as.matrix(aux_seurat_f[[x]]@assays$RNA@counts), min.cells = 0))
+  sce <- cxds_bcds_hybrid(sce, estNdbl = T)
+
+  return(as.Seurat(sce))
+})
+
+aux_seurat_f <- mapply(function(x, y){
+	aux_seurat_f[[x]]$scds_call <- aux[[y]]$hybrid_call
+	return(aux_seurat_f[[x]])
+}, x = 1:length(aux_seurat_f), y = 1:length(aux))
+
+aux <- lapply(aux_seurat_f, function(x){
+	return(x@meta.data[,c("orig.ident", "scds_call")])
+}) %>% do.call(rbind, .)
+
+### filter out doublets" 
+    #| 1. Union of singlets from HTODemux and scDemultiplexing
+    #| 2. Remove those "doublets" according GEX approach (ie, scds)
+
+aux_seurat_ff <- lapply(aux_seurat_f, function(x){
+	aux <- x@meta.data[,c("orig.ident", "hash.ID", "scDemultiplex_cutoff", "scds_call")]
+	tokeep <- rownames(aux[
+    (!(aux$hash.ID %in% c("Negative", "Doublet")) | 
+    	!(aux$scDemultiplex_cutoff %in% c("Doublet", "Negative", "unmapped"))) &
+    aux$scds_call == FALSE,])
+	
+	return(x[,tokeep])
+}); names(aux_seurat_ff) <- myfiles
+
+
+#| assign demultiplexing to samples
+aux_seurat_ff <- lapply(1:length(aux_seurat_ff), function(x){
+	print(names(aux_seurat_ff)[x])
+	aux <- aux_seurat_ff[[x]]
+
+	aux$demux_barcode <- ifelse(aux$HTO_classification.global == "Singlet", aux$HTO_classification, 
+								as.character(aux$scDemultiplex_cutoff))
+	aux$demux_barcode <- gsub("-.*", "", aux$demux_barcode)
+	return(aux)
+}); names(aux_seurat_ff) <- myfiles
+
+sapply(USE.NAMES = T, aux_seurat_ff, FUN = ncol) #compare with merged object below
+
+
+### merge all together and SCT ####
+all_merge <- merge(aux_seurat_ff[[1]], y = aux_seurat_ff[-1], project = "scNUTRI")
+
+tokeep <- which(rowSums(all_merge@assays$RNA@counts) > 0); length(tokeep) #32649
+all_merge <- all_merge[tokeep,]
+
+all_merge <- SCTransform(all_merge, vars.to.regress = c("percent.mt", "S.Score", "G2M.Score"))
+
+```
+
+
+```{r}
+#| echo: true
+#| eval: false
+#| include: true
+#| label: add_azimuth_annotation
+### Azimuth annotation ####################################################################################
+library(Azimuth)
+
+all_merge_azimuth <- RunAzimuth(query = all_merge, reference = "bonemarrowref")
+
+#| add clinical info
+clin <- read.table("../data/metadata2.txt", header = T, sep = "\t")
+
+all_merge_azimuth$cellid <- rownames(all_merge_azimuth@meta.data)
+all_merge_azimuth$aux <- paste0(all_merge_azimuth$samplename, all_merge_azimuth$demux_barcode) #id for clin merge
+
+aux <- inner_join(all_merge_azimuth@meta.data[,c("aux", "cellid")], clin[,-2], by = "aux") #merge doesn't keep rows' order
+rownames(aux) <- aux$cellid; aux$cellid <- NULL
+all_merge_azimuth <- AddMetaData(all_merge_azimuth, metadata = aux)
+
+#| remove some cells (n=3) with wrong/unmapped demux
+all_merge_azimuth <- subset(all_merge_azimuth, subset = aux %in% c("SD-2520_1004_BL_ES_multiomeA0252", "SD-2752_1022_BL_ES_dogma_multiomeunmapped"), invert = T)
+
+
+### UMAP ####
+all_merge_azimuth <- RunPCA(all_merge_azimuth, verbose = F)
+
+# ElbowPlot(all_merge_azimuth)
+k = 18
+
+all_merge_azimuth <- RunUMAP(all_merge_azimuth, n.components = 2,
+                dims = 1:k, n.neighbors = 10, min.dist = 0.6, 
+                spread = 0.9, n.epochs = NULL) 
+```
+
+```{r}
+#| echo: true
+#| eval: false
+#| include: true
+#| label: general_cell_proportions
+
+
+aux_metadata <- all_merge_azimuth$metadata[!is.na(all_merge_azimuth$metadata$timepoint),]
+umap <- u$umap
+
+aux_metadata$BMI_change <- ifelse(aux_metadata$BMI_12m > 0.05, "weight loss", "weight stable")
+aux_metadata$diversity_16S_diff <- ifelse(aux_metadata$patient %in% c(1003, 1006, 1011, 1012, 1014), "poorer", 
+                                               ifelse(aux_metadata$patient %in% c(1001, 1013, 1015, 1017, 1023), "richer", NA))
+
+aux_metadata$predicted.celltype.l2_curated <- factor(aux_metadata$predicted.celltype.l2_curated, levels = poporder)
+annot <- aux_metadata[!duplicated(aux_metadata$patient),-grep("timepoint", colnames(aux_metadata))]
+
+```
+Supplemental Fig 4B:
+
+```{r}
+#| echo: true
+#| eval: false
+#| include: true
+#| label: supp_fig_4b
+
+### - Supp Fig4B ----
+set.seed(333)
+data.frame(Embeddings(umap), aux_metadata) %>% 
+  slice(sample(1:n())) %>% #shuffle rows to avoid plotting in order and create false specific clusters
+  ggplot(aes(umap_1, umap_2, color = predicted.celltype.l2_curated)) + 
+  geom_point(size = 1, alpha = 0.7) + 
+  scale_color_manual(values = popcolor, name = "") +
+  guides(color = guide_legend(ncol = 2, size = 5)) + theme_bw() + 
+  theme(legend.position = "right", legend.text = element_text(size = 10))
+
+```
+
+Supplemental Fig 4C:
+
+```{r}
+#| echo: true
+#| eval: false
+#| include: true
+#| label: supp_fig_4c
+
+### - Supp Fig4C ----
+aux_props <- aux_metadata %>% 
+  group_by(predicted.celltype.l2_curated, patient, timepoint) %>%
+  summarize(n = n()) %>% ungroup() %>% 
+  group_by(patient, timepoint) %>% mutate(n_total = sum(n)) %>% 
+  ungroup() %>% mutate(prop_global = n / n_total)
+
+dfstats_global <- aux_props %>% group_by(predicted.celltype.l2_curated) %>%
+  distinct(timepoint, patient, predicted.celltype.l2_curated, .keep_all = T) %>%
+  wilcox_test(prop_global ~ timepoint) %>% arrange(p)
+
+ggplot(aux_props, aes(predicted.celltype.l2_curated, prop_global, fill = timepoint)) + geom_boxplot() +
+  scale_fill_manual(values = c("azure3", "seagreen3"), name = "Timepoint", labels = c("BL", "W52")) +
+  annotate("rect", xmin = c(1,10,19,26)-0.5, xmax = c(5,12,22,28)+0.5, ymin = -Inf, ymax = Inf, alpha = 0.2, fill = "gray50") +
+  scale_color_manual(values = 1:2, name = "significance") + labs(y = "cell proportions\n(pseudo log-transf.)\n", x = NULL) +
+  scale_y_continuous(trans = scales::pseudo_log_trans(sigma = 0.01), breaks = c(seq(0,0.4, by = 0.1), 0.55,0.75,1), minor_breaks = NULL) + #better than log10, remove 0 values (inf)
+  guides(color = "none") + #ggtitle("global") +
+  geom_text(inherit.aes = F, data = dfstats_global, aes(x = predicted.celltype.l2_curated, 0.95, label = round(p, digits = 2), color = if_else(p <= 0.1, "sig", "ns")), size = 3) + 
+  theme_bw() + theme(axis.text.x = element_text(angle = 45, hjust = 1, size = 10), 
+                     axis.text.y = element_text(size = 10))
+
+```
+
+Supplemental Fig 4D/E:
+
+```{r}
+#| echo: true
+#| eval: false
+#| include: true
+#| label: supp_fig_4de
+
+# W::same variable names for two different analysis
+aux2 <- merge(aux_props, annot) %>% group_by(pops, timepoint, BMI_change) %>% summarise(m = median(value, na.rm = T)) %>%
+  subset(!pops %in% no_mypops)
+FC <- data.frame(pops = unique(aux2$pops), 
+                 loss = log2(aux2$m[aux2$BMI_change == "weight loss" & aux2$timepoint == "ES"]/
+                               aux2$m[aux2$BMI_change == "weight loss" & aux2$timepoint == "BL"]), 
+                 stable = log2(aux2$m[aux2$BMI_change == "weight stable" & aux2$timepoint == "ES"]/
+                                 aux2$m[aux2$BMI_change == "weight stable" & aux2$timepoint == "BL"]))
+FC[is.na(FC)] <- 0 #medians are 0, so ratio NA
+FC$color <- ifelse(FC$pops %in% c("GMP", "CD14 monos"), "sig, weight loss", "") #previous stats
+
+
+aux2 <- merge(aux_props, annot) %>% group_by(pops, timepoint, diversity_16S_diff) %>% summarise(m = median(value, na.rm = T)) %>%
+  subset(!pops %in% no_mypops) %>% subset(!is.na(diversity_16S_diff))
+FC <- data.frame(pops = unique(aux2$pops), 
+                 loss = log2(aux2$m[aux2$diversity_16S_diff == "richer" & aux2$timepoint == "ES"]/
+                               aux2$m[aux2$diversity_16S_diff == "richer" & aux2$timepoint == "BL"]), 
+                 stable = log2(aux2$m[aux2$diversity_16S_diff == "poorer" & aux2$timepoint == "ES"]/
+                                 aux2$m[aux2$diversity_16S_diff == "poorer" & aux2$timepoint == "BL"]))
+FC[is.na(FC)] <- 0 #medians are 0, so ratio NA
+FC$color <- ifelse(FC$pops %in% c("GMP"), "sig, 16S poorer", 
+                   ifelse(FC$pops %in% c("NKs CD56 dim"), "sig, 16S poorer & richer", "")) #from previous stats
+
+
+ggplot(FC, aes(loss, stable, label = pops, color = color)) + 
+  geom_vline(xintercept = 0, lty = 2, color = "gray70") + geom_hline(yintercept = 0, lty = 2, color = "gray70") + geom_abline(slope = 1, lty = 2, color = "gray70") +
+  geom_point(size = 5, alpha = 0.5) + scale_color_manual(values = c(1, "orange2", "red3"), labels = c("ns", "sig. in one condition", "sig. in both conditions")) + #16S
+  ggrepel::geom_text_repel(max.overlaps = 1e3, fill = "white", color = 1, min.segment.length = 0, nudge_y = 0.2) + 
+  labs(x = paste0("enriched at BL <--- high \u03b1-diversity ---> enriched at W52"), y = "enriched at BL <--- low \u03b1-diversity ---> enriched at W52") +  ggtitle("microbiome (16S) diversity") +
+  theme_bw()
+
+
+```
+
+Differential Expression Analysis/Processing:
+
+```{r}
+#| echo: true
+#| eval: false
+#| include: true
+#| label: de_analysis
+
+### DE analyses ###########################################################################################
+library(clusterProfiler)
+
+Idents(all_merge_azimuth) <- all_merge_azimuth$timepoint
+
+all_merge_azimuth$BMI_change <- ifelse(all_merge_azimuth$BMI_12m > 0.05, "weight loss", "weight stable")
+all_merge_azimuth$diversity_16S_diff <- ifelse(all_merge_azimuth$patient %in% c(1003, 1006, 1011, 1012, 1014), "S16.poorer", 
+                                          ifelse(all_merge_azimuth$patient %in% c(1001, 1013, 1015, 1017, 1023), "S16.richer", NA))
+
+all_merge_azimuth_subset <- all_merge_azimuth[,!grepl(paste0(no_mypops, collapse = "|"), all_merge_azimuth$predicted.celltype.l2_curated)]
+
+# global 
+all_merge_azimuth_pseudobulk <- AggregateExpression(all_merge_azimuth_subset, assays = "RNA", return.seurat = T, 
+	group.by = c("predicted.celltype.l2_curated", "patient", "timepoint"))
+Idents(all_merge_azimuth_pseudobulk) <- "timepoint"
+
+degs_deseq_global <- lapply(unique(all_merge_azimuth_pseudobulk$predicted.celltype.l2_curated), function(x){
+	  print(x)
+	  tryCatch({
+	    aux <- all_merge_azimuth_pseudobulk[,all_merge_azimuth_pseudobulk[["predicted.celltype.l2_curated"]] == x]
+	    
+	    aux2 <- FindMarkers(aux, ident.1 = "ES", test.use = "DESeq2")
+	    return(data.frame(aux2, genename = rownames(aux2), pops = x))
+	    }, error = function(er) return(NULL))
+}) %>% do.call(rbind, .)
+
+
+# by condition
+myvar <- "BMI_change" #diversity_16S_diff
+
+all_merge_azimuth_pseudobulk <- AggregateExpression(all_merge_azimuth_subset, assays = "RNA", return.seurat = T, 
+  group.by = c("predicted.celltype.l2_curated", "patient", "timepoint", myvar))
+Idents(all_merge_azimuth_pseudobulk) <- "timepoint"
+
+degs_deseq <- lapply(unique(all_merge_azimuth_pseudobulk$predicted.celltype.l2_curated), function(x){
+  lapply(unique(all_merge_azimuth_pseudobulk[[myvar]][[1]]), function(y){
+    print(paste(x, "-", y))
+    tryCatch({
+      aux <- all_merge_azimuth_pseudobulk[,all_merge_azimuth_pseudobulk[["predicted.celltype.l2_curated"]] == x & 
+                                                all_merge_azimuth_pseudobulk[[myvar]] == y]
+      
+      aux2 <- FindMarkers(aux, ident.1 = "ES", test.use = "DESeq2")
+      return(data.frame(aux2, genename = rownames(aux2), pops = x, condition = y))
+      }, error = function(er) return(NULL))
+  }) %>% do.call(rbind, .) 
+}) %>% do.call(rbind, .)
+degs_deseq_BMI <- degs_deseq
+# degs_deseq_16diff <- degs_deseq
+```
+
+Supplemental Fig 4F:
+
+```{r}
+#| echo: true
+#| eval: false
+#| include: true
+#| label: supp_fig_4f
+
+### - Supp Fig4F ----
+mytable <- degs_deseq_global[degs_deseq_global$p_val <= 0.05,]
+
+mytable$FC_intervals <- cut(abs(mytable$avg_log2FC), breaks = seq(0,10, by = 2))
+mytable$FC_intervals <- ifelse(mytable$avg_log2FC < 0, paste0("-", mytable$FC_intervals), as.character(mytable$FC_intervals))
+mytable$pops <- factor(mytable$pops, levels = unique(degs_deseq_global$pops))
+
+melt(table(FC_intervals = mytable$FC_intervals, pops = mytable$pops)) %>% 
+	mutate(value = ifelse(grepl("-", FC_intervals), -value, value), 
+				 pops = factor(pops, levels = poporder)) %>%
+	ggplot(aes(pops, value, fill = FC_intervals)) + geom_col() + 
+  	scale_fill_manual(values = c(pals::brewer.blues(8)[c(2,4,6,8)], pals::brewer.reds(8)[c(2,4,6,8)])) +
+  	theme_bw() + theme(axis.text.x = element_text(angle = 45, hjust = 1, size = 9))
+
+```
+
+Supplemental Fig 4G-H:
+
+```{r}
+#| echo: true
+#| eval: false
+#| include: true
+#| label: supp_fig_4gh
+
+### - Supp Fig4G-H ----
+mytable <- degs_BMI_deseq[degs_BMI_deseq$p_val <= 0.05,]
+
+mytable$FC_intervals <- cut(abs(mytable$avg_log2FC), breaks = seq(0,10, by = 2))
+mytable$FC_intervals <- ifelse(mytable$avg_log2FC < 0, paste0("-", mytable$FC_intervals), as.character(mytable$FC_intervals))
+mytable$pops <- factor(mytable$pops, levels = unique(degs_BMI_deseq$pops))
+
+melt(table(FC_intervals = mytable$FC_intervals, pops = mytable$pops, condition = mytable$condition)) %>% 
+	mutate(value = ifelse(grepl("-", FC_intervals), -value, value), 
+				 pops = factor(pops, levels = poporder)) %>%
+	ggplot(aes(pops, value, fill = FC_intervals)) + geom_col() + facet_grid(. ~ condition) + 
+  	scale_fill_manual(values = c(pals::brewer.blues(8)[c(2,4,6,8)], pals::brewer.reds(8)[c(2,4,6,8)])) +
+  	theme_bw() + theme(axis.text.x = element_text(angle = 45, hjust = 1, size = 9))
+
+```
+
+GSEA analysis:
+
+```{r}
+#| echo: true
+#| eval: false
+#| include: true
+#| label: gsea_analysis_processing
+
+### GSEA analyses #########################################################################################
+# global
+genesets_hallmark <- msigdbr::msigdbr(species = "Homo sapiens", category = "H")[,c("gs_name", "gene_symbol")]
+
+aux <- split(degs_deseq_global, degs_deseq_global$pops, drop = TRUE)
+gseares_global <- lapply(aux, function(x){
+  print(unique(x$pops))
+
+  aux <- x[x$p_val <= 0.05, c("genename", "avg_log2FC")]
+  aux <- sort(setNames(aux$avg_log2FC, aux$genename), decreasing = T)
+
+  tryCatch({
+    gsea <- GSEA(aux, TERM2GENE = genesets_hallmark, minGSSize = 3, pvalueCutoff = 1)
+    return(data.frame(gsea, pops = unique(x$pops))) 
+    }, error = function(er) return(NULL))
+}) %>% do.call(rbind, .)
+
+
+# by condition
+condition_degs <- degs_deseq_traj3
+
+aux <- split(condition_degs, list(condition_degs$condition, condition_degs$pops), drop = TRUE)
+gseares <- lapply(aux, function(x){
+	print(paste(unique(x$condition), "-", unique(x$pops)))
+
+	aux <- x[x$p_val <= 0.05, c("genename", "avg_log2FC")]
+	aux <- sort(setNames(aux$avg_log2FC, aux$genename), decreasing = T)
+
+  tryCatch({
+    gsea <- GSEA(aux, TERM2GENE = genesets_hallmark, minGSSize = 3, pvalueCutoff = 1)
+    return(data.frame(gsea, condition = unique(x$condition), pops = unique(x$pops))) 
+    }, error = function(er) return(NULL))
+}) %>% do.call(rbind, .)
+gseares_degs_bulk_BMI <- gseares
+# gseares_degs_bulk_16diff <- gseares
+
+```
+
+Figure 3E:
+
+```{r}
+#| echo: true
+#| eval: false
+#| include: true
+#| label: fig_3E
+
+### - Fig3E ----
+mypaths <- c("HALLMARK_COMPLEMENT", "HALLMARK_IL6_JAK_STAT3_SIGNALING", 
+             "HALLMARK_INFLAMMATORY_RESPONSE", "HALLMARK_INTERFERON_GAMMA_RESPONSE", 
+             "HALLMARK_TNFA_SIGNALING_VIA_NFKB")
+
+
+gseares_global %>% subset(ID %in% mypaths & pops %in% mypops) %>% 
+  mutate(pops = factor(pops, levels = poporder), ID = factor(ID, levels = mypaths)) %>%
+  arrange(-pvalue) %>%
+  ggplot(aes(pops, ID, fill = NES, size = -log10(pvalue))) + coord_cartesian(clip = "off") +
+      geom_point(pch = 21, aes(color = if_else(pvalue <= 0.1, "sig", "ns"), stroke = if_else(pvalue <= 0.1, 0.7, 0.5))) + 
+      scale_fill_gradient2(low = "azure4", mid = "white", high = "seagreen3", breaks = seq(-2, 2, by = 1)) +
+      scale_color_manual(values = c("gray90", "gray40")) + guides(color = F) +
+      scale_size(range = c(0,9)) + labs(x = NULL, y = NULL) +
+      theme_bw() + theme(#axis.ticks.x = element_blank(), 
+          axis.text.x = element_text(angle = 45, hjust = 1, size = 7), 
+          axis.text.y = element_text(size = 7), 
+          panel.border = element_blank(), legend.position = "none")
+
+```
+
+Figure 4 I and J:
+
+```{r}
+#| echo: true
+#| eval: false
+#| include: true
+#| label: fig_4_ij
+
+### - Supp Fig4I-J ----
+gseares_degs_bulk_BMI %>% subset(ID %in% mypaths & pops %in% mypops) %>% arrange(-pvalue) %>%
+  mutate(pops = factor(pops, levels = intersect(mypops, poporder)), 
+         ID = factor(ID, levels = mypaths)) %>% 
+  ggplot(aes(condition, ID, fill = NES, size = -log10(pvalue))) + coord_cartesian(clip = "off") +
+  geom_point(pch = 21, aes(color = if_else(pvalue <= 0.1, "sig", "ns"), stroke = if_else(pvalue <= 0.1, 0.7, 0.5))) + 
+  scale_fill_gradient2(low = "azure4", mid = "white", high = "seagreen3", breaks = seq(-2, 2, by = 1)) +
+  scale_color_manual(values = c("gray90", "red3")) + guides(color = F) +
+  facet_grid(. ~ pops, drop = F, labeller = label_wrap_gen(width = 10)) + 
+  scale_size(range = c(0,9)) + labs(x = NULL, y = NULL) +
+  theme_bw() + theme(axis.text.x = element_text(angle = 45, hjust = 1), 
+                     panel.border = element_blank(), legend.position = "right")
+
+```
+
+Cell Chat Analysis:
+
+```{r}
+#| echo: true
+#| eval: false
+#| include: true
+#| label: cellchat_processing
+
+### cellchat analysis #####################################################################################
+library(CellChat); future::plan("multisession", workers = 6)
+
+Idents(all_merge_azimuth) <- "predicted.celltype.l2_curated"
+
+mypops <- c("GMP", "CD14 monos", "CD16 monos", "MDSC", "CD8 cytotox", "CD8 exhausted", "NKs CD56 dim", "NKs CD56 bright")
+
+all_merge_azimuth_subset <- all_merge_azimuth[,grepl(paste0(mypops, collapse = "|"), 
+				all_merge_azimuth$predicted.celltype.l2_curated)]
+
+
+# prepare icellnet
+aux <- read.table("https://github.com/soumelis-lab/ICELLNET/raw/master/data/ICELLNETdb.tsv", header = T, sep = "\t", quote = "", row.names = NULL)
+aux$name <- paste0(aux$Family, "..", aux$Subfamily)
+
+interaction_input <- aux[,c("Ligand.1", "Receptor.1", "name")]
+colnames(interaction_input) <- c("ligand", "receptor", "pathway_name")
+gene_info <- data.frame(Symbol = aux$Ligand.1)
+
+db.icellnet <- updateCellChatDB(db = interaction_input, gene_info = gene_info)
+db.icellnet <- updateCellChatDB(db = interaction_input, gene_info = NULL, species_target = "human")
+
+
+### run cellchat ####
+aux_cellchat_all <- sapply(USE.NAMES = T, simplify = F, c("BL", "ES"), function(y){
+  print(y)
+  
+  aux <- createCellChat(all_merge_azimuth_subset[,all_merge_azimuth_subset[["timepoint"]] == y], 
+    group.by = "ident", assay = "RNA")
+  aux@DB <- db.icellnet #icellnet
+
+  aux <- subsetData(aux) #mandatory
+  aux <- identifyOverExpressedGenes(aux)
+  aux <- identifyOverExpressedInteractions(aux)
+
+  aux <- computeCommunProb(aux, type = "triMean")
+  aux <- computeCommunProbPathway(aux)
+  aux <- aggregateNet(aux)
+
+  aux <- netAnalysis_computeCentrality(aux)
+})
+
+cellchat_all <- mergeCellChat(aux_cellchat_all, add.names = c("BL", "ES")) #fix pops differences between BL/ES
+
+```
+
+Supplemental Figure 3F:
+
+```{r}
+#| echo: true
+#| eval: false
+#| include: true
+#| label: supp_fig_3_f
+
+### - Supp Fig3F ----
+netVisual_diffInteraction(cellchat_all, weight.scale = T, 
+	label.edge = F, vertex.size.max = 5, arrow.width = 2,
+	color.use = popcolor, color.edge = c("seagreen3", "azure3"))
+```
+
+
+Supplemental Figure 3G:
+
+```{r}
+#| echo: true
+#| eval: false
+#| include: true
+#| label: supp_fig_3_g
+
+### - Supp Fig3G ----
+netVisual_aggregate(aux_cellchat_all$BL, signaling = "Cytokine..TNF", color.use = popcolor, 
+	layout = "chord", vertex.label.cex = 1)
+netVisual_aggregate(aux_cellchat_all$ES, signaling = "Cytokine..TNF", color.use = popcolor, 
+	layout = "chord", vertex.label.cex = 1)
+```
+
+Supplemental Figure 4K:
+
+```{r}
+#| echo: true
+#| eval: false
+#| include: true
+#| label: supp_fig_4_k
+
+### - Supp Fig4K ----
+p1 <- melt(cellchat_all@net[["ES"]][["count"]]-cellchat_all@net[["BL"]][["count"]]) %>% 
+  mutate(Var1 = factor(Var1, levels = poporder), Var2 = factor(Var2, levels = poporder)) %>%
+  ggplot(aes(Var2, Var1, fill = value)) + geom_tile() +
+    scale_fill_gradient2(low = "azure4", mid = "white", high = "seagreen3") +
+    labs(y = "Sources (sender)", x = "Targets (receiver)") +
+    theme_bw() + theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5), 
+      legend.position = "bottom")
+
+p2 <- rbind(data.frame(pops = rownames(cellchat_all@net[["ES"]][["count"]]), timepoint = "ES", 
+         sources = rowSums(cellchat_all@net[["ES"]][["count"]])),
+    data.frame(pops = rownames(cellchat_all@net[["BL"]][["count"]]), timepoint = "BL", 
+         sources = rowSums(cellchat_all@net[["BL"]][["count"]]))) %>%
+  group_by(pops) %>% 
+  mutate(diff.sources = sources[timepoint == "ES"]-sources[timepoint == "BL"]) %>%
+  melt() %>% mutate(timepoint = ifelse(grepl("diff", variable), "diff", timepoint), 
+            variable = gsub("diff\\.", "", variable)) %>%
+  distinct() %>% subset(timepoint == "diff") %>%
+  mutate(pops = factor(pops, levels = poporder)) %>% 
+  ggplot(aes(value, pops, fill = value)) + geom_col(color = "gray80", linewidth = 0.2) + 
+    labs(y = NULL, x = NULL) + guides(y = "none") + #scale_x_continuous(limits = c(-100,200)) + 
+    scale_fill_gradient2(low = "azure4", mid = "white", high = "seagreen3") +
+    theme_bw() + theme(legend.position = "none", axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5), 
+    	panel.grid.major = element_blank())
+
+p3 <- rbind(data.frame(pops = rownames(cellchat_all@net[["ES"]][["count"]]), timepoint = "ES", 
+         targets = colSums(cellchat_all@net[["ES"]][["count"]])),
+    data.frame(pops = rownames(cellchat_all@net[["BL"]][["count"]]), timepoint = "BL", 
+         targets = colSums(cellchat_all@net[["BL"]][["count"]]))) %>%
+  group_by(pops) %>% 
+  mutate(diff.targets = targets[timepoint == "ES"]-targets[timepoint == "BL"]) %>%
+  melt() %>% mutate(timepoint = ifelse(grepl("diff", variable), "diff", timepoint), 
+            variable = gsub("diff\\.", "", variable)) %>%
+  distinct() %>% subset(timepoint == "diff") %>%
+  mutate(pops = factor(pops, levels = poporder)) %>% 
+  ggplot(aes(value, pops, fill = value)) + geom_col(color = "gray80", linewidth = 0.2) + coord_flip() +
+    scale_fill_gradient2(low = "azure4", mid = "white", high = "seagreen3") +
+    labs(x = NULL, y = NULL) + guides(x = "none") + #scale_x_continuous(limits = c(-100,200)) + 
+    theme_bw() + theme(legend.position = "none", panel.grid.major = element_blank())
+
+p3 + plot_spacer() + p1 + p2 + plot_layout(ncol = 2, heights = c(0.2, 1), widths = c(1.1,0.2))
+```

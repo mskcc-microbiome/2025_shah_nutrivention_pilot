@@ -1,12 +1,12 @@
 ---
-title: "All Analyses"
-listing:
-  contents: analyses
-  sort: "date desc"
-  type: default
-  categories: true
-  sort-ui: false
-  filter-ui: false
+title: "NUTRIVENTION Clinical Trial and Preclinical Vk*MYC Model"
 ---
 
+This site is dedicated to the corresponding manuscript: "A High-Fiber Plant-Based Diet in Myeloma Precursor Disorders – Results from the NUTRIVENTION Clinical Trial and Preclinical Vk*MYC Model"
+
+Where possible code has been written so that it can be executed from this repository.  However there are certain types of data we are not able to make public.  Cells which rely on private data will be marked as not executable, however, even in cases where the data is not public all to code used to generate figures is here. 
+
+This is a Quarto website.
+
+To learn more about Quarto websites visit <https://quarto.org/docs/websites>.
 

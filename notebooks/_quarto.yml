@@ -3,11 +3,11 @@ project:
   output-dir: ../docs
 
 website:
-  title: "My Project Title (replace me in _quarto.yml)" #UPDATE ME
+  title: "NUTRIVENTION Clinical Trial" #UPDATE ME
   navbar:
     left:
       - icon: github
-        href: "https://github.mskcc.org" # UPDATE ME
+        href: "https://github.com/mskcc-microbiome/2025_shah_nutrivention_pilot" # UPDATE ME
   sidebar:
     style: "floating"
     search: true
@@ -23,14 +23,15 @@ website:
         contents: 
           - text: "Overview of all Analyses"
             href: index.qmd
-          - text: "Example Summary"
-            href: summaries/00-example_summary.qmd
+          - text: "RNA Seq Analysis"
+            href: analyses/rna_seq.qmd
+          - text: "Cazyme Analysis"
+            href: analyses/cazyme.qmd
+          - text: "Body Composition\nAnalysis"
+            href: analyses/body_comp.qmd
 
 format:
   html:
     theme: 
-      - minty  #OPTIONALLY UPDATE ME, OR GO WITH MY TASTE :) 
-      - custom.scss # Feel free to drop if wanted.  Just some additional fiddling on my part. :) 
-
-
-
+      - minty 
+      - custom.scss 
