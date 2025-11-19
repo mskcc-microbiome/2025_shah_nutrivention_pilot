@@ -4,29 +4,238 @@ date: last-modified
 categories: [analysis]
 ---
 
+
+In this document you can find the assorted scripts for performing the Cazyme analysis this manuscript. The author of this code is Mirae Baichoo
+
 ```{r}
 #| echo: false
 #| warning: false
 #| include: false
+#| eval: false
 #| label: library_imports
 
-library(tidyverse)
+library(stats)
 library(ggplot2)
+library(readr)
+library(stringr)
+library(dplyr)
+library(tidyverse)
+library(openxlsx)
+
 source("../utility_scripts/plotting_help.R")
 ```
 
 ```{r}
-#| echo: false
+#| echo: true
+#| eval: false
 #| include: true
-#| label: example_figure_saving
+#| label: load_data
 
-fake_db <- data.frame(colA = c(1,3,5,2,8,10,6), colB = c(2.2, 4.6, 12, 4.2, 14, 21, 10))
+#___________________________________________________________________________________________________________________
+# Loading Data:
 
-ggplot(fake_db, aes(x = colA, y = colB)) +
-  geom_point(size = 3, color = "steelblue") +
-  theme_classic()
+# Load Metadata, which will allow us to assign time stamps to different data points:
+metadata_df <- read_tsv('metadata_path', col_types = NULL) %>%
+  janitor::clean_names()
 
-#Note I set save_date = T when I am playing around with the data so I have snapshots of figures as I work on them over time.  Once an analysis has matured I typically try to turn this off. 
-save_figures("example_figure", save_date =T)
+# Load read alignments:
+data_dir <- 'data_dir'
+merged_data_frame_inner <- NULL
+sample_names <- list()
+for (sample_file in list.files(data_dir, '*.tsv')){
+  sample_name <- str_sub(sample_file,1,-5)
+  if (!grepl('GutZymo', sample_name)) {  # We drop the GutZymo when reading it in, this was a control
+    sample_df <- read_tsv(paste0(data_dir, sample_file)) %>%
+      as.data.frame() %>% 
+      filter(caz_type == 'CAZyme') %>%
+      subset(select=c('DIAMOND', 'RPM', 'substrate')) %>%
+      group_by(DIAMOND, substrate) %>% 
+      summarise(tot_rpm=sum(RPM)) %>%
+      ungroup() %>%
+      rename(!!sample_name := tot_rpm)
+    
+    sample_names <- append(sample_names, sample_name)
+    
+    if (is.null(merged_data_frame_inner)) {
+      merged_data_frame_inner <- sample_df
+    } else{
+      merged_data_frame_inner <- inner_join(
+        x = merged_data_frame_inner,
+        y = sample_df,
+        by = c("DIAMOND", "substrate"),
+      )
+    }
+  }
+}
 
+```
+
+```{r}
+#| echo: true
+#| eval: false
+#| include: true
+#| label: filter_and_reformat_data
+#___________________________________________________________________________________________________________________
+# Filtering and Reformatting Data:
+
+# We will merge the metadata with the RPM data, discard limit our selection of Cazymes:
+
+metadata_and_data <- merged_data_frame_inner %>%
+  pivot_longer(!c(DIAMOND, substrate), names_to='sample_id', values_to='RPM') %>%
+  filter(! DIAMOND == '-') %>%
+  filter(grepl('GH|PL', DIAMOND)) %>%  # We only consider GH and PL Cazymes, and not mixed CBM Cazymes
+  filter(!grepl('CBM', DIAMOND)) %>%
+  left_join(metadata_df, by = "sample_id") 
+
+# Next for calculating the various values, we consider only those samples with paired values for each of the time points of comparison:
+
+filter_timepoints <- function(all_data, time){
+  return(all_data %>%
+           group_by(mrn, DIAMOND, substrate) %>% 
+           summarize(has_time = ('Baseline' %in% time_point && time %in% time_point)) %>%
+           ungroup() %>% 
+           right_join(metadata_and_data, by=c("mrn", "DIAMOND", "substrate")) %>%
+           filter(has_time) %>%
+           select(-c(has_time)))
+}
+
+
+metadata_and_data_c2d1 <- filter_timepoints(metadata_and_data, 'C2D1')
+metadata_and_data_c4d1 <- filter_timepoints(metadata_and_data, 'C4D1') 
+
+
+```
+
+```{r}
+#| echo: true
+#| eval: false
+#| include: true
+#| label: calculate_stats
+#_______________________________________________________________________________________________________
+# Calculating Statistical Significance and other Statistics:
+
+add_stats <- function(data_table){
+  return(data_table %>%
+           group_by(DIAMOND, substrate) %>%
+           summarize(
+             N = n(),
+             IQR = paste(
+               formatC(quantile(RPM)[2], digits = 3),
+               formatC(quantile(RPM)[4], digits = 3),
+               sep = ","),
+             Median = formatC(quantile(RPM)[3], digits = 3),
+           ) %>%
+           ungroup()
+  )
+}
+
+baseline_stats <- add_stats(metadata_and_data %>%
+            filter(time_point == 'Baseline')) %>%
+  rename(all_of(c(
+    baseline_N = "N",
+    baseline_IQR = "IQR",
+    baseline_Median = "Median"
+  )))
+c2d1_stats <- add_stats(metadata_and_data %>%
+                              filter(time_point == 'C2D1'))%>%
+  rename(all_of(c(
+    c2d1_N = "N",
+    c2d1_IQR = "IQR",
+    c2d1_Median = "Median"
+  )))
+c4d1_stats <- add_stats(metadata_and_data %>%
+                          filter(time_point == 'C4D1'))%>%
+  rename(all_of(c(
+    c4d1_N = "N",
+    c4d1_IQR = "IQR",
+    c4d1_Median = "Median"
+  )))
+
+
+get_p_val <- function(time, rpm, comp_time){
+  formatC(wilcox.test(rpm[time=="Baseline"], rpm[time==comp_time], alternative="two.sided")$p.value, digits = 3)
+}
+
+
+stat_sig_vals_week_4 <- metadata_and_data_c2d1 %>%
+  group_by(DIAMOND, substrate) %>%
+  summarise(p_val_c2d1=get_p_val(time_point, RPM, "C2D1")) %>%
+  ungroup() %>% 
+  filter(p_val_c2d1 < 0.1)
+
+stat_sig_vals_week_12 <- metadata_and_data_c4d1 %>%
+  group_by(DIAMOND, substrate) %>%
+  summarise(p_val_c4d1=get_p_val(time_point, RPM, "C4D1")) %>%
+  ungroup() %>% 
+  filter(p_val_c4d1 < 0.1)
+
+final_stats_table <- stat_sig_vals_week_4 %>%
+  left_join(stat_sig_vals_week_12, by = c("DIAMOND", "substrate")) %>%
+  left_join(baseline_stats, by = c("DIAMOND", "substrate")) %>%
+  left_join(c2d1_stats, by = c("DIAMOND", "substrate")) %>%
+  left_join(c4d1_stats, by = c("DIAMOND", "substrate"))
+
+#write.xlsx(final_stats_table, 'data/Cazyme_stats_table.xlsx')
+
+metadata_and_data_plot <- metadata_and_data_c2d1 %>%
+  left_join(stat_sig_vals_week_4, by = c('DIAMOND', 'substrate')) %>%
+  filter(! is.na(p_val_c2d1)) %>%
+  mutate(p_val_name = formatC(p_val_c2d1, format = "e", digits = 3)) 
+
+
+```
+
+```{r}
+#| echo: true
+#| eval: false
+#| include: true
+#| label: plot_aes
+
+colScale <- scale_fill_manual(name = "time_point", values = c(
+  "Baseline"="#007CBA",
+  "C2D1"="lightblue",
+  "C4D1"="#DF4602"
+))
+
+```
+
+```{r}
+#| echo: true
+#| eval: false
+#| include: true
+#| label: plot
+
+# Note that for the figure the commented code below was added back and the labels
+# were then manually added in illustrator.  By commenting them out the labels will be
+# seen direclty in the plot. 
+plt_obj <- ggplot(metadata_and_data_plot, aes(x=time_point, y=RPM)) + 
+  theme(
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.background = element_rect(fill = 'white', color = 'gray')) + 
+  geom_boxplot(aes(fill = time_point)) +
+  facet_grid(cols = vars(substrate, DIAMOND), scales = "free") + 
+  geom_line(aes(group = mrn), alpha = .5, color = "darkgray") +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) +
+  colScale + 
+  labs(
+    y = 'Reads per Million',
+    fill = '.'
+  ) + 
+  theme(text = element_text(size = 20)) +
+  #theme(legend.title = "none") + 
+  theme(axis.ticks.x=element_blank(), 
+        axis.title.x=element_blank(),
+        #axis.text.y=element_blank(), 
+        #axis.ticks.y=element_blank(), 
+        #axis.title.y=element_blank(),
+        strip.text=element_blank(),
+        axis.text.x=element_blank())
+
+saveRDS(plt_obj, "figures/Cazyme_Plot_Object.rds")
+
+aspect_ratio = 2
+height = 4
+ggsave('figures/only_W_12_Sig_Cazyme.png', height = height, width = height*aspect_ratio)
+#ggsave('figures/4.22.24_only_W_12_Sig_Cazyme.svg', height = height, width = height*aspect_ratio)
 ```

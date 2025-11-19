@@ -4,7 +4,7 @@ date: last-modified
 categories: [analysis]
 ---
 
-In this document you can find the assorted scripts for performing the single cell RNA-seq analysis for this manuscript. The author of this code is 
+In this document you can find the assorted scripts for performing the single cell RNA-seq analysis for this manuscript. The author of this code is Juan-Jose Garces
 
 ```{r}
 #| echo: false
