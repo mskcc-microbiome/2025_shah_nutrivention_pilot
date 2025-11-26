@@ -26,7 +26,7 @@ website:
           - text: "RNA Seq Analysis"
             href: analyses/rna_seq.qmd
           - text: "Cazyme Analysis"
-            href: analyses/cazyme.qmd
+            href: analyses/cazyme_analysis.qmd
           - text: "Body Composition\nAnalysis"
             href: analyses/body_comp.qmd
 

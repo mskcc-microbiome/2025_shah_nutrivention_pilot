@@ -1,0 +1,802 @@
+---
+title: "Microbiome and Clinical Analysis"
+date: last-modified
+categories: [analysis]
+---
+
+
+In this document you can find the assorted scripts for performing various analyses on the microbiome outcomes, and the clinical outcomes. The author of this code is Teng Fei
+
+```{r}
+#| echo: false
+#| warning: false
+#| include: false
+#| eval: false
+#| label: library_imports
+
+library(tidyverse)
+library(ggpubr)
+library(patchwork)
+library(geepack)
+library(vegan)
+library(ape)
+library(LDM)
+
+library(phyloseq)
+library(ggplot2)
+library(yingtools2)
+
+
+library(readxl)
+library(FLORAL)
+
+
+```
+
+```{r}
+#| echo: true
+#| eval: false
+#| include: true
+#| label: load_data
+df_main <- readRDS("<Path to data storage>df_main.Rds")
+load("<Path to data storage>df_seq.rdata")
+load("<Path to data storage>/df_merged.Rdata")
+load("<Path to data storage>/16S.rdata")
+
+```
+```{r}
+#| echo: true
+#| eval: false
+#| include: true
+#| label: reformat_data
+
+
+df_seq <- df_seq %>% 
+  mutate(TimePoint = factor(TimePoint,
+                            levels = levels(TimePoint),
+                            labels = c("Baseline","Week 4","Week 8","Week 12",
+                                       "Week 24","Week 52")))
+
+
+idx <- which(df_pt_16s$TimePoint %in% c("Baseline","C4D1"))
+
+df_taxa_filtered <- df_taxa[idx,]
+df_pt_filtered <- data.frame(df_pt_16s[idx,])
+
+
+```
+
+```{r}
+#| echo: true
+#| eval: false
+#| include: true
+#| label: calc_microbiome_distances
+## Bray-Curtis distance matrix
+distmat <- vegan::vegdist(df_taxa)
+distmat <- as.matrix(distmat)
+
+## LDM test (permutation test may return different p-values at different runs)
+fit <- ldm(df_taxa_filtered ~ TimePoint,
+           cluster.id = MRN,
+           data = df_pt_filtered)
+fit$p.global.omni
+
+distmat_pca <- princomp(distmat)$scores
+distmat_pcoa <- ape::pcoa(distmat)$vectors
+
+df_16s <- bind_cols(data.frame(df_pt_16s),distmat_pca[,1:3],distmat_pcoa[,1:3]) %>% 
+  mutate(MRN = as.numeric(MRN)) %>% 
+  left_join(df_main) %>% 
+  arrange(MRN,Time)#%>% 
+# filter(TimePoint %in% c("Baseline","C4D1"))
+
+df_16s %>% 
+  select(InvSimpson_16S, bp_16S, TimePoint) %>% 
+  tbl_summary(by=TimePoint)
+```
+
+```{r}
+#| echo: true
+#| eval: false
+#| label: figs
+fig2c_a <- ggpaired(df_seq %>% filter(TimePoint %in% c("Baseline","Week 12","Week 24","Week 52")), x = "TimePoint", y = "InvSimpson_16S",
+               color="TimePoint",
+               id="MRN",
+               # facet.by = "Mspike",
+               line.color = "gray", line.size = 0.4, linetype = 2,
+               palette = "jco")+
+  xlab("")+
+  ylab("Simpson's reciprocal (16S)")+
+  scale_color_manual(values=c("#007CBA","#DF4602","#83276B","#4C8B2B")) + 
+  guides(color=guide_legend(title="")) + theme(legend.position = "none")
+
+fig2c_b <- ggpaired(df_seq %>% filter(TimePoint %in% c("Baseline","Week 4","Week 12")), x = "TimePoint", y = "InvSimpson_shotgun",
+               color="TimePoint",
+               id="MRN",
+               # facet.by = "Mspike",
+               line.color = "gray", line.size = 0.4, linetype = 2,
+               palette = "jco")+
+  xlab("")+
+  ylab("Simpson's reciprocal (shotgun)")+
+  scale_color_manual(values=c("#007CBA","lightblue","#DF4602","#83276B","#4C8B2B")) + 
+  guides(color=guide_legend(title="")) + theme(legend.position = "none")
+
+fig2d_a <- ggpaired(df_seq %>% filter(TimePoint %in% c("Baseline","Week 12","Week 24","Week 52")), x = "TimePoint", y = "bp_16S",
+               color="TimePoint",
+               id="MRN",
+               # facet.by = "Mspike",
+               line.color = "gray", line.size = 0.4, linetype = 2,
+               palette = "jco")+
+  xlab("")+
+  ylab("Butyrate producer (16S)")+
+  scale_color_manual(values=c("#007CBA","#DF4602","#83276B","#4C8B2B")) + 
+  guides(color=guide_legend(title="")) + theme(legend.position = "none")
+
+fig2d_b <- ggpaired(df_seq %>% filter(TimePoint %in% c("Baseline","Week 4","Week 12")), x = "TimePoint", y = "bp_shotgun",
+         color="TimePoint",
+         id="MRN",
+         # facet.by = "Mspike",
+         line.color = "gray", line.size = 0.4, linetype = 2,
+         palette = "jco")+
+  xlab("")+
+  ylab("Butyrate producer (shotgun)")+
+  scale_color_manual(values=c("#007CBA","lightblue","#DF4602","#83276B","#4C8B2B")) + 
+  guides(color=guide_legend(title="")) + theme(legend.position = "none")
+
+
+
+
+
+fig2e <- df_16s %>% 
+  filter(TimePoint %in% c("Baseline","C4D1")) %>% 
+  mutate(Sample = factor(TimePoint,levels=c("Baseline","C4D1"),labels=c("Baseline","W12"))) |> 
+  ggplot(aes(x=Comp.1,y=Comp.2)) +
+  geom_point(aes(color=Sample,shape=Sample,group=MRN)) +
+  # scale_color_gradient(low="red",high="blue",name="Inverse Simpson's index")+
+  geom_line(aes(group=MRN),col="lightgrey") + 
+  xlab("PC1") +
+  ylab("PC2") +
+  stat_ellipse(aes(linetype=Sample,color=Sample)) + 
+  annotate("text",x=1,y=-1.5,label="LDM global test p=0.002") + 
+  scale_color_manual(values=c("#007CBA","#DF4602")) + 
+  theme_classic() + 
+  theme(aspect.ratio = 1)
+
+
+files <- list.files("<Path to data storage>/Diet final 2")
+
+df <- NULL
+
+for (i in 1:length(files)){
+  
+  dfi <- read_excel(paste0("<Path to data storage>/Diet final 2/",files[i]),
+                    na = c("MISSING","LTFU"))
+  
+  ID <- as.numeric(strsplit(files[i],split="_")[[1]][2])
+  
+  dfi$`Subject ID` <- ID
+  
+  df <- rbind(df,dfi[,c(1:24,26:27)])
+  
+}
+
+df <- df[complete.cases(df),]
+
+colnames(df)[24] <- "% Adherence"
+
+df <- df |> 
+  mutate(Cycle = factor(Cycle,labels = c("BL","W4","W12","W24","W52")))|> 
+  mutate(TimePoint = factor(Cycle,
+                            levels=c("BL","W4","W12","W24","W52"),
+                            labels=c("Baseline","C2D1","C4D1","C7D1","End of Study")))
+
+df_main <- df_main |> 
+  select(MRN,BMI,TimePoint,InvSimpson_16S,bp_16S,Sample_ID,DateCollection,`Study ID`,Initials) |> 
+  left_join(df,by=c("Study ID" = "Subject ID",
+                    "TimePoint",
+                    "Initials"))  |> 
+  filter(TimePoint!="C3D1") |> 
+  mutate(TimePoint = factor(TimePoint)) |> 
+  mutate(Time = as.numeric(as.character(factor(TimePoint,
+                                               labels=c(0,1,3,6,12)))))
+
+df_main <- df_main |> 
+  filter(!is.na(`FIBER (G)`)) |> 
+  # filter(!is.na(InvSimpson_shotgun)) |> 
+  mutate(TimePoint = factor(TimePoint,
+                            levels = levels(TimePoint),
+                            labels = c("Baseline","Week 4","Week 12",
+                                       "Week 24","Week 52"))) |> 
+  rename(FIBER = `FIBER (G)`)
+
+
+summary(geeglm(InvSimpson_16S ~ BMI, id = MRN, corstr = "exch", data=df_main))
+fig2f <- ggscatter(df_main  %>% filter(TimePoint %in% c("Baseline","Week 4","Week 12","Week 24","Week 52")),
+                y="InvSimpson_16S",
+                x="BMI",
+                color="TimePoint",
+                shape="TimePoint") + 
+  ylab("Simpson's reciprocal (16S)")+
+  xlab("BMI")+
+  scale_color_manual(values=c("#007CBA","lightblue","#DF4602","#83276B","#4C8B2B"))+
+  guides(color=guide_legend(title=""),
+         shape=guide_legend(title="")) + 
+  geom_path(aes(group=MRN),alpha=0.1,linetype=2,arrow = arrow(type = "closed", 
+                                                              length = unit(0.1, "inches"))) + 
+  geom_abline(slope = -0.124, intercept = 12.3, color="red",alpha=0.5) + 
+  annotate("text",x=45,y=16,label=expression(paste(hat(beta)[GEE],"=",-0.12))) +
+  annotate("text",x=45,y=15,label="p<0.001")+
+  theme(legend.position = 'bottom',aspect.ratio = 1)
+
+summary(geeglm(InvSimpson_16S ~ `Fiber per 1000kcal`, id = MRN, corstr = "exch", data=df_main))
+p1 <- ggscatter(df_main  %>% filter(TimePoint %in% c("Baseline","Week 4","Week 12","Week 24","Week 52")),
+                y="InvSimpson_16S",
+                x="Fiber per 1000kcal",
+                color="TimePoint",
+                shape="TimePoint") + 
+  ylab("Simpson's reciprocal (16S)")+
+  xlab("Fiber intake (grams per 1000kcal)")+
+  scale_color_manual(values=c("#BDBDBD",  "#C7E9C0", "#A1D99B", "#41AB5D", "#006D2C"))+
+  guides(color=guide_legend(title=""),
+         shape=guide_legend(title="")) + 
+  geom_path(aes(group=MRN),alpha=0.1,linetype=2,arrow = arrow(type = "closed", 
+                                                              length = unit(0.1, "inches"))) + 
+  geom_abline(slope = 0.084, intercept = 6.4718, color="red",alpha=0.5) + 
+  annotate("text",x=35,y=16,label=expression(paste(hat(beta)[GEE],"=",0.084))) +
+  annotate("text",x=35,y=15,label="p=0.004")+
+  theme(legend.position = 'bottom', aspect.ratio=1)
+fig2g <- p1
+
+summary(geeglm(InvSimpson_16S ~ `HEI TOTAL`, id = MRN, corstr = "exch", data=df_main))
+p2 <- ggscatter(df_main  %>% filter(TimePoint %in% c("Baseline","Week 4","Week 12","Week 24","Week 52")),
+                y="InvSimpson_16S",
+                x="HEI TOTAL",
+                color="TimePoint",
+                shape="TimePoint") + 
+  ylab("Simpson's reciprocal (16S)")+
+  xlab("HEI score")+
+  scale_color_manual(values=c("#BDBDBD",  "#C7E9C0", "#A1D99B", "#41AB5D", "#006D2C"))+
+  guides(color=guide_legend(title=""),
+         shape=guide_legend(title="")) + 
+  geom_path(aes(group=MRN),alpha=0.1,linetype=2,arrow = arrow(type = "closed", 
+                                                              length = unit(0.1, "inches"))) + 
+  geom_abline(slope = 0.0446, intercept = 5.0394, color="red",alpha=0.5) + 
+  annotate("text",x=50,y=16,label=expression(paste(hat(beta)[GEE],"=",0.045))) +
+  annotate("text",x=50,y=15,label="p=0.017")+
+  theme(legend.position = 'bottom', aspect.ratio=1)
+figS4a <- p2
+
+summary(geeglm(InvSimpson_16S ~ `% Adherence`, id = MRN, corstr = "exch", data=df_main))
+p3 <- ggscatter(df_main  %>% filter(TimePoint %in% c("Baseline","Week 4","Week 12","Week 24","Week 52")),
+                y="InvSimpson_16S",
+                x="% Adherence",
+                color="TimePoint",
+                shape="TimePoint") + 
+  ylab("Simpson's reciprocal (16S)")+
+  xlab("Dietary adherence score")+
+  scale_color_manual(values=c("#BDBDBD",  "#C7E9C0", "#A1D99B", "#41AB5D", "#006D2C"))+
+  guides(color=guide_legend(title=""),
+         shape=guide_legend(title="")) + 
+  geom_path(aes(group=MRN),alpha=0.1,linetype=2,arrow = arrow(type = "closed", 
+                                                              length = unit(0.1, "inches"))) + 
+  geom_abline(slope = 2.788, intercept = 6.303, color="red",alpha=0.5) + 
+  annotate("text",x=0.5,y=16,label=expression(paste(hat(beta)[GEE],"=",2.790))) +
+  annotate("text",x=0.5,y=15,label="p=0.001")+
+  theme(legend.position = 'bottom', aspect.ratio=1)
+figS4b <- p3
+
+summary(geeglm(bp_16S ~ `Fiber per 1000kcal`, id = MRN, corstr = "exch", data=df_main))
+p1 <- ggscatter(df_main  %>% filter(TimePoint %in% c("Baseline","Week 4","Week 12","Week 24","Week 52")),
+                y="bp_16S",
+                x="Fiber per 1000kcal",
+                color="TimePoint",
+                shape="TimePoint") + 
+  ylab("Relative abundance of\nbutyrate producers")+
+  xlab("Fiber intake (grams per 1000kcal)")+
+  scale_color_manual(values=c("#BDBDBD",  "#C7E9C0", "#A1D99B", "#41AB5D", "#006D2C"))+
+  guides(color=guide_legend(title=""),
+         shape=guide_legend(title="")) + 
+  geom_path(aes(group=MRN),alpha=0.1,linetype=2,arrow = arrow(type = "closed", 
+                                                              length = unit(0.1, "inches"))) + 
+  geom_abline(slope = 0.00386, intercept = 0.01991, color="red",alpha=0.5) + 
+  annotate("text",x=35,y=0.4,label=expression(paste(hat(beta)[GEE],"=",0.004))) +
+  annotate("text",x=35,y=0.35,label="p=0.014")+
+  theme(legend.position = 'bottom', aspect.ratio=1)
+fig2h <- p1
+
+summary(geeglm(bp_16S ~ `HEI TOTAL`, id = MRN, corstr = "exch", data=df_main))
+p2 <- ggscatter(df_main  %>% filter(TimePoint %in% c("Baseline","Week 4","Week 12","Week 24","Week 52")),
+                y="bp_16S",
+                x="HEI TOTAL",
+                color="TimePoint",
+                shape="TimePoint") + 
+  ylab("Relative abundance of\nbutyrate producers")+
+  xlab("HEI score")+
+  scale_color_manual(values=c("#BDBDBD",  "#C7E9C0", "#A1D99B", "#41AB5D", "#006D2C"))+
+  guides(color=guide_legend(title=""),
+         shape=guide_legend(title="")) + 
+  geom_path(aes(group=MRN),alpha=0.1,linetype=2,arrow = arrow(type = "closed", 
+                                                              length = unit(0.1, "inches"))) + 
+  geom_abline(slope = 0.00248, intercept = -0.0771, color="red",alpha=0.5) + 
+  annotate("text",x=50,y=0.4,label=expression(paste(hat(beta)[GEE],"=",0.002))) +
+  annotate("text",x=50,y=0.35,label="p=0.006")+
+  theme(legend.position = 'bottom', aspect.ratio=1)
+figS4d <- p2
+
+summary(geeglm(bp_16S ~ `% Adherence`, id = MRN, corstr = "exch", data=df_main))
+p3 <- ggscatter(df_main  %>% filter(TimePoint %in% c("Baseline","Week 4","Week 12","Week 24","Week 52")),
+                y="bp_16S",
+                x="% Adherence",
+                color="TimePoint",
+                shape="TimePoint") + 
+  ylab("Relative abundance of\nbutyrate producers")+
+  xlab("Dietary adherence score")+
+  scale_color_manual(values=c("#BDBDBD",  "#C7E9C0", "#A1D99B", "#41AB5D", "#006D2C"))+
+  guides(color=guide_legend(title=""),
+         shape=guide_legend(title="")) + 
+  geom_path(aes(group=MRN),alpha=0.1,linetype=2,arrow = arrow(type = "closed", 
+                                                              length = unit(0.1, "inches"))) + 
+  geom_abline(slope = 0.1004, intercept = 0.0317, color="red",alpha=0.5) + 
+  annotate("text",x=0.5,y=0.4,label=expression(paste(hat(beta)[GEE],"=",0.100))) +
+  annotate("text",x=0.5,y=0.35,label="p=0.002")+
+  theme(legend.position = 'bottom', aspect.ratio=1)
+figS4e <- p3
+
+library(tidyverse)
+library(ggpubr)
+library(patchwork)
+library(geepack)
+
+load("<Path to data storage>/df_merged.Rdata")
+load("<Path to data storage>/16S.rdata")
+df_main <- readRDS("<Path to data storage>df_main.Rds")
+
+df_merged <- df |> 
+  filter(cycle != "NA") |> 
+  mutate(TimePoint = factor(cycle,
+                            levels=c("BL","C2","C4","C7","ES"),
+                            labels=c("Baseline","C2D1","C4D1","C7D1","End of Study")))
+
+df_main <- df_main |> 
+  select(MRN,TimePoint,InvSimpson_16S,bp_16S,Sample_ID,DateCollection) |> 
+  left_join(df_merged,by=c("MRN","TimePoint")) |> 
+  mutate(BMI = as.numeric(BMI)) |> 
+  filter(TimePoint!="C3D1") |> 
+  mutate(TimePoint = factor(TimePoint)) |> 
+  mutate(Time = as.numeric(as.character(factor(TimePoint,
+                                               labels=c(0,1,3,6,12)))))
+
+df_main <- df_main |> 
+  mutate(TimePoint = factor(TimePoint,
+                            levels = levels(TimePoint),
+                            labels = c("Baseline","Week 4","Week 12",
+                                       "Week 24","Week 52")))
+
+summary(geeglm(bp_16S ~ BMI, id = MRN, corstr = "exch", data=df_main))
+p2 <- ggscatter(df_main  %>% filter(TimePoint %in% c("Baseline","Week 4","Week 12","Week 24","Week 52")),
+                y="bp_16S",
+                x="BMI",
+                color="TimePoint",
+                shape="TimePoint") + 
+  ylab("Relative abundance of\nbutyrate producers")+
+  xlab("BMI")+
+  scale_color_manual(values=c("#BDBDBD",  "#C7E9C0", "#A1D99B", "#41AB5D", "#006D2C"))+
+  guides(color=guide_legend(title=""),
+         shape=guide_legend(title="")) + 
+  geom_path(aes(group=MRN),alpha=0.1,linetype=2,arrow = arrow(type = "closed", 
+                                                              length = unit(0.1, "inches"))) + 
+  geom_abline(slope = -0.0007, intercept = 0.129, color="red",alpha=0.5) + 
+  annotate("text",x=40,y=0.4,label=expression(paste(hat(beta)[GEE],"=",-0.001))) +
+  annotate("text",x=40,y=0.35,label="p=0.709")+
+  theme(legend.position = 'bottom',aspect.ratio = 1)
+figS4c <- p2
+
+###########
+
+library(tidyverse)
+library(biostatR)
+library(ggpubr)
+library(patchwork)
+library(geepack)
+
+load("<Path to data storage>df_seq.Rdata")
+# load(here_data("shotgun.rdata"))
+
+df_depth <- data.frame(Sample_ID = rownames(tabsmat),
+                       depth = rowSums(tabsmat))
+
+df_seq <- df_seq %>% left_join(df_depth)
+
+df_seq <- df_seq %>% filter(!is.na(InvSimpson_shotgun))
+
+df_taxa <- trelmat[df_seq$Sample_ID,]
+
+bind_cols(df_seq,df_taxa) %>% 
+  select(InvSimpson_shotgun,
+         InvSimpson_shotgun_genus,
+         bp_shotgun,
+         TimePoint) %>% 
+  tbl_summary(by=TimePoint)
+
+df_shotgun <- bind_cols(df_seq,df_taxa) %>% 
+  filter(TimePoint %in% c("Baseline","C4D1"))
+
+taxalist <- colnames(df_taxa)
+
+butyrate.species <- c("Anaerobutyricum hallii",
+                      "Eubacterium limosum",
+                      "[Eubacterium] rectale",
+                      "Amedibacillus dolichus",
+                      "Holdemanella biformis",
+                      "Eubacterium ventriosum",
+                      #"[Eubacterium] saphenum",
+                      #"[Eubacterium] cellulosolvens",
+                      "Odoribacter splanchnicus",
+                      "[Eubacterium] yurii",
+                      "Lacrimispora saccharolytica",
+                      "[Clostridium] symbiosum",
+                      "Mediterraneibacter glycyrrhizinilyticus",
+                      #"Clostridium butyricum",
+                      #"Clostridium botulinum",
+                      "Clostridioides difficile",
+                      # "Clostridium sporogenes",
+                      # "Clostridium sticklandii",
+                      "Agathobaculum butyriciproducens", # NEW
+                      # "Eubacterium desmolans",
+                      "Alistipes putredinis",
+                      "Limosilactobacillus fermentum",
+                      "Roseburia intestinalis",
+                      "Roseburia hominis",
+                      "Roseburia inulinivorans",
+                      # "Porphyromonas asaccharolytica",
+                      # "Porphyromonas gingivalis",
+                      # "Porphyromonas endodontalis",
+                      # "Pseudoramibacter alactolyticus",
+                      # "Pseudoramibacter uenosis", #??Pseudoramibacter uenosis??
+                      # "Propionibacterium acidifaciens",
+                      "Acidaminococcus fermentans",
+                      # "Acetonema longum",
+                      "Anaerostipes caccae",
+                      # "Fusobacterium gonidiaformans",
+                      # "Fusobacterium mortiferum",
+                      "Fusobacterium nucleatum",
+                      "Fusobacterium ulcerans",
+                      "Fusobacterium varium",
+                      # "Brachyspira murdochii",
+                      # "Brachyspira pilosicoli",
+                      # "Treponema phagedenis",
+                      # "Brachyspira vincentii",
+                      # "Anaerococcus hydrogenalis",
+                      # "Anaerococcus lactolyticus",
+                      # "Anaerococcus prevotii",
+                      # "Anaerococcus tetradius",
+                      "Anaerococcus vaginalis",
+                      "Peptoniphilus duerdenii",
+                      "Peptoniphilus harei",
+                      "Peptoniphilus lacrimalis",
+                      # "Shuttleworthia satelles",
+                      # "Propionibacterium acidifaciens",
+                      "Anaerofustis stercorihominis"
+                      # "Subdoligranulum variabile",
+                      # "Megasphaera micronuciformis"
+)
+
+
+taxatab_twopoints <- NULL
+
+df_shotgun_paired <- df_shotgun %>%
+  filter(TimePoint %in% c("Baseline","C4D1")) %>% group_by(`Study ID`) %>% filter(n() == 2) %>% 
+  arrange(TimePoint,`Study ID`)
+
+df_diff <- NULL
+
+for (i in 1:length(butyrate.species)){
+  
+  # for (i in 1:length(taxalist)){
+  
+  # print(butyrate.species[i])
+  
+  # regression <- as.formula(paste0(taxalist[i],"~ as.factor(TimePoint)"))
+  # 
+  # geefit <- geeglm(regression, id=`IDMS Pt ID`, data=df_16s, corstr="exch")
+  # 
+  # summary(geefit)
+  
+  vec <- unlist(df_shotgun_paired[taxalist[i]])
+  
+  test <- suppressWarnings(wilcox.test(vec[1:15],
+                                       vec[16:30],
+                                       paired = TRUE,
+                                       alternative = "less"))
+  
+  res <- data.frame(taxa=taxalist[i],
+                    statistic=test$statistic,
+                    p=test$p.value,
+                    median.baseline=median(vec[1:15]),
+                    median.c4d1=median(vec[16:30]),
+                    median.delta=median(vec[16:30]-vec[1:15]),
+                    median.fc=median(log(vec[16:30]+1e-8)-log(vec[1:15]+1e-8)),
+                    mean.baseline=mean(vec[1:15]),
+                    mean.c4d1=mean(vec[16:30]),
+                    mean.delta=mean(vec[16:30]-vec[1:15]),
+                    mean.fc=mean(log(vec[16:30]+1e-8)-log(vec[1:15]+1e-8)),
+                    bp = taxalist[i] %in% butyrate.species)
+  
+  taxatab_twopoints <- rbind(taxatab_twopoints,res)
+  
+  df_diff <- cbind(df_diff, log(vec[16:30]+1e-8)-log(vec[1:15]+1e-8))
+}
+
+rownames(df_diff) <- df_shotgun_paired$`Study ID`[1:15]
+colnames(df_diff) <- butyrate.species
+
+df_diff_long <- data.frame(df_diff,check.names = FALSE) %>% 
+  pivot_longer(cols=butyrate.species,names_to="Species",values_to = "Diff")
+
+taxatab_twopoints$q <- NA
+taxatab_twopoints$q[!is.na(taxatab_twopoints$p)] <- p.adjust(taxatab_twopoints$p[!is.na(taxatab_twopoints$p)],method="BH")
+
+df_shotgun_paired$TimePoint = as.character(df_shotgun_paired$TimePoint)
+df_shotgun_paired$TimePoint[df_shotgun_paired$TimePoint == "C4D1"] = "W12" 
+
+figS4h_a <- ggpaired(df_shotgun_paired,
+                     x="TimePoint",
+                     color="TimePoint",
+                     y="Roseburia hominis",
+                     id="Study ID",
+                     # facet.by = "Mspike",
+                     line.color = "gray", line.size = 0.4,
+                     palette = "jco")+
+  xlab("Time")+
+  ylab("Relative abundance")+
+  stat_compare_means(comparisons=list( c("Baseline", "W12")),method="wilcox.test",paired = TRUE)+
+  ggtitle("Roseburia hominis") + guides(color=guide_legend(title="")) + theme(legend.position = "none") + 
+  scale_color_manual(values=c("#BDBDBD","#A1D99B"))
+
+figS4h_b <- ggpaired(df_shotgun_paired,
+                     x="TimePoint",
+                     color="TimePoint",
+                     y="Agathobaculum butyriciproducens",
+                     id="Study ID",
+                     # facet.by = "Mspike",
+                     line.color = "gray", line.size = 0.4,
+                     palette = "jco")+
+  xlab("Time")+
+  ylab("Relative abundance")+
+  stat_compare_means(comparisons=list( c("Baseline", "W12")),method="wilcox.test",paired = TRUE)+
+  ggtitle("Agathobaculum butyriciproducens") + guides(color=guide_legend(title="")) + theme(legend.position = "none") + 
+  scale_color_manual(values=c("#BDBDBD","#A1D99B"))
+
+taxatab_twopoints <- NULL
+
+df_shotgun_paired <- df_shotgun %>%
+  filter(TimePoint %in% c("Baseline","C4D1")) %>% group_by(`Study ID`) %>% filter(n() == 2) %>% 
+  arrange(TimePoint,`Study ID`)
+
+df_diff <- NULL
+
+for (i in 1:length(taxalist)){
+  
+  print(taxalist[i])
+  
+  # regression <- as.formula(paste0(taxalist[i],"~ as.factor(TimePoint)"))
+  # 
+  # geefit <- geeglm(regression, id=`IDMS Pt ID`, data=df_16s, corstr="exch")
+  # 
+  # summary(geefit)
+  
+  vec <- unlist(df_shotgun_paired[taxalist[i]])
+  
+  test <- suppressWarnings(wilcox.test(vec[1:15],
+                                       vec[16:30],
+                                       paired = TRUE))
+  
+  res <- data.frame(taxa=taxalist[i],
+                    statistic=test$statistic,
+                    p=test$p.value,
+                    median.baseline=median(vec[1:15]),
+                    median.c4d1=median(vec[16:30]),
+                    median.delta=median(vec[16:30]-vec[1:15]),
+                    mean.baseline=mean(vec[1:15]),
+                    mean.c4d1=mean(vec[16:30]),
+                    mean.delta=mean(vec[16:30]-vec[1:15]))
+  
+  taxatab_twopoints <- rbind(taxatab_twopoints,res)
+  
+  if(!is.nan(test$p.value) & test$p.value < 0.05){
+    df_diff <- cbind(df_diff,log(vec[16:30]+1e-8)-log(vec[1:15]+1e-8))
+    colnames(df_diff)[ncol(df_diff)] <- taxalist[i]
+  }
+}
+
+rownames(df_diff) <- df_shotgun_paired$`Study ID`[1:15]
+
+df_diff_long <- data.frame(df_diff,check.names = FALSE) %>% 
+  pivot_longer(cols=colnames(df_diff),names_to="Species",values_to = "Diff")
+
+df_diff_long <- df_diff_long %>%
+  group_by(Species) %>% 
+  mutate(med = median(Diff)) %>% 
+  arrange(med) %>% 
+  mutate(Species = as.character(Species))
+
+fig2i <- df_diff_long %>% 
+  mutate(Species = factor(Species, levels=unique(df_diff_long$Species))) %>% 
+  ggplot(aes(x=Diff,y=Species,fill=Species)) +
+  geom_boxplot() + 
+  geom_vline(xintercept = 0,color="lightblue",linetype=2) + 
+  xlab("Relative abundance log-fold change\nbetween W12 and baseline")+
+  ggtitle("Shotgun relative abundance\nlog-fold changes (top species)")+
+  guides(fill="none")
+
+# ggsave("shotgun taxa.pdf",width=6,height=6)
+
+#######
+
+
+
+phy_raw <- readRDS("<Path to data storage>dada2_June2023.RDS")
+depths <- sample_sums(phy_raw)
+sum(depths < 5000)
+data.frame(lib_size = sample_sums(phy_raw)) %>% rownames_to_column("sampleid") %>%
+  ggplot(aes(x=lib_size)) + geom_histogram(bins=30)
+
+summary(sample_sums(phy_raw))
+phy_raw <- subset_samples(phy_raw, sample_sums(phy_raw) > 5000)
+
+otu_table(phy_raw)[otu_table(phy_raw) < 2] = 0 # reads < 2: treat as zero
+phy = tax_glom(phy_raw, taxrank = "Genus")
+phy = filter_taxa(phy, function(x) mean(x > 0) > 0, TRUE) # filtered by prevalence > 0%: exclude ASVs not detected in the data
+phy_abs = filter_taxa(phy, function(x) mean(x > 0) > 0, TRUE) # save this for absolute abundance
+phy = transform_sample_counts(phy, function(x) x / sum(x) ) # relative abundance: used for alpha diversity
+
+df_main <- readRDS("<Path to data storage>df_main.Rds")
+
+taxtable <- data.frame(cid.phy@tax_table@.Data) %>% distinct %>% select(Genus,taxon)
+
+otu <- phy %>% get.otu.melt() %>%
+  left_join(taxtable) %>% 
+  mutate(taxon = ifelse(!is.na(taxon), taxon, 
+                        ifelse(Phylum=="Firmicutes", "Other Firmicutes",
+                               ifelse(Phylum == "Bacteroidetes", "Other Bacteroidetes",
+                                      "Other Bacteria")) )) %>% 
+  mutate(taxon=factor(taxon,levels=rev(names(cid.colors)))) %>% 
+  left_join(df_main %>% select(Sample_ID,TimePoint,`Study ID`)) %>% 
+  arrange(`Study ID`,TimePoint) %>% 
+  rename(ID=`Study ID`) %>% 
+  filter(!(Sample_ID %in% c("2928B","3211B"))) |> 
+  mutate(TimePoint = factor(TimePoint, levels=c("Baseline",
+                                                "C2D1",
+                                                "C3D1",
+                                                "C4D1",
+                                                "C7D1",
+                                                "End of Study"),
+                            labels=c("Baseline",
+                                     "W4",
+                                     "W8",
+                                     "W12",
+                                     "W24",
+                                     "W52")))
+
+otu$ID <- otu$ID - 1000
+
+figS4f <- 
+  ggplot(otu,aes(x=TimePoint,y=pctseqs,fill=taxon)) + geom_col() +
+  scale_fill_manual("Taxa",values=cid.colors) +
+  ylim(c(0,1))+
+  ylab("Composition")+
+  theme(axis.text.x = element_text(size=6.5,angle = 45, vjust = 1, hjust=1),
+        axis.title.y=element_text(size=12),
+        axis.title.x=element_blank(),
+        axis.ticks=element_blank(),
+        axis.line = element_blank(),
+        panel.background = element_blank(),
+        legend.text = element_text(size=11),
+        legend.position="bottom", 
+        legend.direction="horizontal") +
+  guides(fill=guide_legend(nrow=3,byrow=TRUE)) +
+  facet_grid(.~ID,scales="free",space="free")
+
+# ggsave("compositions.pdf",width=10,height=5)
+
+# plot.title = element_text(size = 20, face = "bold"), # Plot title
+# axis.title.x = element_text(size = 16),             # X-axis title
+# axis.text.x = element_text(size = 12),              # X-axis labels
+# legend.text = element_text(size = 10)               # Legend text
+##############
+
+df_main <- readRDS("<Path to data storage>df_main.Rds")
+load("<Path to data storage>16S.rdata")
+
+df_16s <- bind_cols(data.frame(df_pt_16s),df_taxa) %>% 
+  mutate(MRN = as.numeric(MRN)) %>% 
+  left_join(df_main) %>% 
+  filter(TimePoint %in% c("Baseline","C4D1"))
+
+df_16s_class <- bind_cols(data.frame(df_pt_16s),df_taxa_class) %>% 
+  mutate(MRN = as.numeric(MRN)) %>% 
+  left_join(df_main)
+
+taxalist <- colnames(df_taxa)
+
+taxatab_twopoints <- NULL
+
+df_16s_paired <- df_16s %>% filter(TimePoint %in% c("Baseline","C4D1")) %>% group_by(MRN) %>% filter(n() == 2) %>% 
+  arrange(TimePoint,MRN)
+
+targetlist <- c("Citrobacter", 
+                "Enterobacter", 
+                "Klebsiella", 
+                "Streptococcus", 
+                "Collinsella", 
+                "Intestinimonas", 
+                "Veillonella",
+                "Odoribacter")
+
+bp.list <- c("Faecalibacterium","Anaerofustis","Anaerotruncus","Butyrivibrio","Coprococcus")
+
+df_diff <- NULL
+
+for (i in 1:length(taxalist)){
+  
+  # regression <- as.formula(paste0(taxalist[i],"~ as.factor(TimePoint)"))
+  # 
+  # geefit <- geeglm(regression, id=`IDMS Pt ID`, data=df_16s, corstr="exch")
+  # 
+  # summary(geefit)
+  
+  vec <- unlist(df_16s_paired[taxalist[i]])
+  
+  test <- suppressWarnings(wilcox.test(vec[1:14],
+                                       vec[15:28],
+                                       paired = TRUE))
+  
+  res <- data.frame(taxa=taxalist[i],
+                    statistic=test$statistic,
+                    p=test$p.value,
+                    median.baseline=median(vec[1:14]),
+                    median.c4d1=median(vec[15:28]),
+                    median.delta=median(vec[15:28]-vec[1:14]),
+                    median.fc=median(log(vec[15:28]+1e-8)-log(vec[1:14]+1e-8)),
+                    mean.baseline=mean(vec[1:14]),
+                    mean.c4d1=mean(vec[15:28]),
+                    mean.delta=mean(vec[15:28]-vec[1:14]),
+                    mean.fc=mean(log(vec[15:28]+1e-8)-log(vec[1:14]+1e-8)),
+                    inlist = taxalist[i] %in% targetlist,
+                    bp = taxalist[i] %in% bp.list)
+  
+  taxatab_twopoints <- rbind(taxatab_twopoints,res)
+  
+  if(!is.nan(test$p.value) & test$p.value < 0.05){
+    df_diff <- cbind(df_diff,log(vec[15:28]+1e-8)-log(vec[1:14]+1e-8))
+    colnames(df_diff)[ncol(df_diff)] <- taxalist[i]
+  }
+}
+
+taxatab_twopoints$q <- NA
+taxatab_twopoints$q[!is.na(taxatab_twopoints$p)] <- p.adjust(taxatab_twopoints$p[!is.na(taxatab_twopoints$p)],method="BH")
+
+df_diff_long <- data.frame(df_diff,check.names = FALSE) %>% 
+  pivot_longer(cols=colnames(df_diff),names_to="Genera",values_to = "Diff")
+
+df_diff_long <- df_diff_long %>%
+  group_by(Genera) %>% 
+  mutate(med = median(Diff)) %>% 
+  arrange(med) %>% 
+  mutate(Genera = as.character(Genera))
+
+figS4g <- df_diff_long %>% 
+  mutate(Genera = factor(Genera, levels=unique(df_diff_long$Genera))) %>% 
+  ggplot(aes(x=Diff,y=Genera,fill=Genera)) +
+  geom_boxplot() + 
+  geom_vline(xintercept = 0,color="lightblue",linetype=2) +
+  xlab("Relative abundance log-fold change\nbetween W12 and baseline")+
+  ggtitle("16S relative abundance\nlog-fold changes (Top genera)") +
+  guides(fill="none")
+
+# ggsave("16S taxa.pdf",width=4,height=4)
+
+figS4h_a | figS4h_b
+# ggsave("Top two taxa.pdf",width=8,height=4)
+
+```
